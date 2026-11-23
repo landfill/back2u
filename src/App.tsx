@@ -5,7 +5,8 @@ import { REGIONS, type Region } from '../shared/regions'
 import type { LostItem as Row, SearchResponse } from '../shared/types'
 
 type Result = Omit<SearchResponse,'status'> & { status:SearchResponse['status']|'call_failed' }
-type Meta = { regions:Region[]; maxRangeDays:number; maxItemsPerSource:number; apiKeyConfigured:boolean }
+type Meta = { regions:Region[]; maxRangeDays:number; maxRangeDaysNationwide?:number; maxItemsPerSource:number; apiKeyConfigured:boolean }
+const NATIONWIDE='지역전체'
 const STORAGE_KEY = 'back2u-search-preferences-v3'
 const CATEGORY_OPTIONS = ['분류전체','가방·지갑','전자기기','의류·잡화','카드·서류','기타','지갑','휴대폰','가방','카드','우산']
 const QUICK_CATEGORIES = ['지갑','휴대폰','가방','카드','우산','전자기기']
@@ -35,31 +36,50 @@ export default function App(){
  const [saving,setSaving]=useState(false)
  const toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null)
  const searchId=useRef(0)
+ const inflight=useRef<AbortController|null>(null)
  const dialogRef=useRef<HTMLDivElement>(null)
  const previousFocus=useRef<HTMLElement|null>(null)
  const notify=(message:string)=>{if(toastTimer.current)clearTimeout(toastTimer.current);setToast(message);toastTimer.current=setTimeout(()=>setToast(''),4200)}
  const comingSoon=()=>notify('준비중입니다')
- const patch=(key:keyof SearchForm,value:string)=>{setForm(f=>({...f,[key]:value}));if(key==='start_date'||key==='end_date')setPeriodError('')}
+ const patch=(key:keyof SearchForm,value:string)=>{
+  if(key==='region'){
+   const next={...form,region:value},clamped=clampRange(next,limitFor(value))
+   setForm(clamped)
+   if(clamped!==next)notify(`${rangeMessage(value,limitFor(value))} 시작일을 ${dot(clamped.start_date)}로 조정했어요.`)
+   return
+  }
+  setForm(f=>({...f,[key]:value}));if(key==='start_date'||key==='end_date')setPeriodError('')
+ }
  const regionOptions:Region[]=metadata?.regions?.length?metadata.regions:REGIONS
- const maxRangeDays=metadata?.maxRangeDays||92
+ const regionalMaxDays=metadata?.maxRangeDays||31
+ const nationwideMaxDays=metadata?.maxRangeDaysNationwide||7
+ const limitFor=(region:string,meta:Meta|null=metadata)=>(region||NATIONWIDE)===NATIONWIDE?(meta?.maxRangeDaysNationwide||7):(meta?.maxRangeDays||31)
+ const rangeMessage=(region:string,limit:number)=>(region||NATIONWIDE)===NATIONWIDE?`전국 조회는 최대 ${limit}일까지예요. 더 긴 기간은 시·도를 선택해 주세요.`:`시·도 조회는 최대 ${limit}일까지 선택할 수 있어요.`
+ /** 종료일 기준으로 기간이 제한을 넘으면 시작일을 당긴다. */
+ const clampRange=(f:SearchForm,limit:number):SearchForm=>f.start_date&&f.end_date&&daysBetween(f.start_date,f.end_date)>limit?{...f,start_date:shiftDate(f.end_date,-(limit-1))}:f
+ const formLimit=limitFor(form.region)
  const regionLabel=(value:string)=>value==='지역전체'?'전국 전체':regionOptions.find(x=>x.commCd===value)?.cdNm||value
  const rowRegion=(row:Row)=>row.regionCode?regionLabel(row.regionCode):'전국 조회 · 지역 미지정'
  const police=result?.bySource?.police, portal=result?.bySource?.portal
 
- const runSearch=async(criteria:SearchForm,pageNo=1,move=false)=>{
+ const runSearch=async(criteria:SearchForm,pageNo=1,move=false,meta:Meta|null=metadata)=>{
   if(!criteria.start_date||!criteria.end_date||criteria.start_date>criteria.end_date){setPeriodError('시작일과 종료일을 모두 선택하고, 시작일이 더 늦지 않은지 확인해 주세요.');return}
-  if(daysBetween(criteria.start_date,criteria.end_date)>maxRangeDays){setPeriodError(`조회 기간은 최대 ${maxRangeDays}일까지 선택할 수 있어요.`);return}
+  const limit=limitFor(criteria.region,meta)
+  if(daysBetween(criteria.start_date,criteria.end_date)>limit){setPeriodError(rangeMessage(criteria.region,limit));return}
   const id=++searchId.current
+  inflight.current?.abort()
+  const controller=new AbortController()
+  inflight.current=controller
   setSelected(null);setLoading(true);setResult(null);setPeriodError('');setApplied({...criteria})
   try{
    const query=new URLSearchParams({START_YMD:criteria.start_date.replaceAll('-',''),END_YMD:criteria.end_date.replaceAll('-',''),pageNo:String(pageNo),numOfRows:'20',region:criteria.region||'지역전체',institution:criteria.institution||'기관전체',category:criteria.item_type||'분류전체',keyword:criteria.keyword.trim()})
-   const response=await api('lost-items?'+query)
+   const response=await api('lost-items?'+query,{signal:controller.signal})
    const data=await response.json().catch(()=>null) as SearchResponse|null
    if(!data||!data.status)throw new Error('request_failed')
    if(id!==searchId.current)return
    setResult(data.status==='ok'?data:{...data,items:[]})
-  }catch{if(id===searchId.current)setResult({status:'call_failed',items:[],matchedCount:0,receivedCount:0,complete:false,pageNo,numOfRows:20,pageCount:0,bySource:{},message:'서버에 연결하지 못했습니다. 실제 유실물 0건을 뜻하지 않습니다. 잠시 후 다시 시도해 주세요.'})}
-  finally{if(id===searchId.current){setLoading(false);if(move)document.getElementById('lf-results')?.scrollIntoView({behavior:'smooth',block:'start'})}}
+  }catch{if(id===searchId.current&&!controller.signal.aborted)setResult({status:'call_failed',items:[],matchedCount:0,receivedCount:0,complete:false,pageNo,numOfRows:20,pageCount:0,bySource:{},message:'서버에 연결하지 못했습니다. 실제 유실물 0건을 뜻하지 않습니다. 잠시 후 다시 시도해 주세요.'})}
+  finally{if(id===searchId.current){inflight.current=null;setLoading(false);if(move)document.getElementById('lf-results')?.scrollIntoView({behavior:'smooth',block:'start'})}}
  }
  useEffect(()=>{
   let active=true
@@ -69,13 +89,14 @@ export default function App(){
    const meta=await api('meta').then(r=>{if(!r.ok)throw new Error();return r.json() as Promise<Meta>}).catch(()=>null)
    if(!active)return
    if(meta)setMetadata(meta);else setMetaError(true)
-   const initial=restore(local,defaultForm())
+   let initial=restore(local,defaultForm())
    if(initial.end_date>today()||initial.start_date>initial.end_date){initial.start_date=shiftDate(today(),-6);initial.end_date=today()}
+   initial=clampRange(initial,limitFor(initial.region,meta))
    setForm(initial)
-   void runSearch(initial)
+   void runSearch(initial,1,false,meta)
   }
   void init()
-  return()=>{active=false;if(toastTimer.current)clearTimeout(toastTimer.current)}
+  return()=>{active=false;inflight.current?.abort();if(toastTimer.current)clearTimeout(toastTimer.current)}
  },[])
  useEffect(()=>{
   if(!selected)return
@@ -106,7 +127,7 @@ export default function App(){
  const reset=()=>{setForm(defaultForm());setPeriodError('');notify('검색 조건을 초기화했습니다. 찾기를 누르면 최근 7일 전체를 조회해요.')}
  const choosePeriod=(days:number)=>{
   const end=today(),start=shiftDate(end,-(days-1))
-  if(days>maxRangeDays){notify(`조회 기간은 최대 ${maxRangeDays}일까지 선택할 수 있어요.`);return}
+  if(days>formLimit){notify(rangeMessage(form.region,formLimit));return}
   setForm(f=>({...f,start_date:start,end_date:end}));setPeriodError('')
  }
  const filterInstitution=(value:string)=>{const next={...form,institution:value};setForm(next);void runSearch(next)}
@@ -137,8 +158,9 @@ export default function App(){
      <div className="lf-search-fields">
       <div className="lf-field-group is-period">
        <label className="lf-label" htmlFor="lf-from"><span className="lf-step">01</span>언제 · 분실 기간<span className="lf-required" aria-hidden="true">*</span></label>
-       <div className="lf-field-row"><input id="lf-from" className={'lf-field'+(periodError?' is-invalid':'')} aria-label="분실 기간 시작일" aria-required="true" aria-invalid={!!periodError} aria-describedby={periodError?'lf-period-error':undefined} type="date" value={form.start_date} max={today()} onChange={e=>patch('start_date',e.target.value)}/><span className="lf-period-separator" aria-hidden="true">~</span><input id="lf-to" className={'lf-field'+(periodError?' is-invalid':'')} aria-label="분실 기간 종료일" aria-required="true" aria-invalid={!!periodError} type="date" value={form.end_date} max={today()} onChange={e=>patch('end_date',e.target.value)}/></div>
-       <div className="lf-chips" role="group" aria-label="기간 빠른 선택">{[{label:'오늘',days:1},{label:'최근 7일',days:7},{label:'최근 1개월',days:30},{label:'최근 3개월',days:90}].map(p=>{const active=form.end_date===today()&&form.start_date===shiftDate(today(),-(p.days-1));return <button className={'lf-chip'+(active?' is-active':'')} type="button" aria-pressed={active} key={p.label} onClick={()=>choosePeriod(p.days)}>{p.label}</button>})}</div>
+       <div className="lf-field-row"><input id="lf-from" className={'lf-field'+(periodError?' is-invalid':'')} aria-label="분실 기간 시작일" aria-required="true" aria-invalid={!!periodError} aria-describedby={periodError?'lf-period-error':undefined} type="date" value={form.start_date} min={form.end_date?shiftDate(form.end_date,-(formLimit-1)):undefined} max={form.end_date||today()} onChange={e=>patch('start_date',e.target.value)}/><span className="lf-period-separator" aria-hidden="true">~</span><input id="lf-to" className={'lf-field'+(periodError?' is-invalid':'')} aria-label="분실 기간 종료일" aria-required="true" aria-invalid={!!periodError} type="date" value={form.end_date} max={today()} onChange={e=>patch('end_date',e.target.value)}/></div>
+       <div className="lf-chips" role="group" aria-label="기간 빠른 선택">{[{label:'오늘',days:1},{label:'최근 3일',days:3},{label:'최근 7일',days:7},{label:'최근 1개월',days:30}].map(p=>{const active=form.end_date===today()&&form.start_date===shiftDate(today(),-(p.days-1));const over=p.days>formLimit;return <button className={'lf-chip'+(active?' is-active':'')} type="button" aria-pressed={active} aria-disabled={over} title={over?rangeMessage(form.region,formLimit):undefined} key={p.label} onClick={()=>choosePeriod(p.days)}>{p.label}</button>})}</div>
+       <p className="lf-help">{form.region===NATIONWIDE?`전국은 최대 ${nationwideMaxDays}일, 시·도를 고르면 최대 ${regionalMaxDays}일까지 조회할 수 있어요.`:`이 지역은 최대 ${regionalMaxDays}일까지 조회할 수 있어요.`}</p>
        {periodError&&<p className="lf-field-error" id="lf-period-error" role="alert">{periodError}</p>}
       </div>
       <div className="lf-field-group is-region">
@@ -157,7 +179,7 @@ export default function App(){
     </form>
     <div className="lf-claim"><div><p className="lf-claim-label">SEARCH TICKET</p><p className="lf-claim-period">{shortDate(form.start_date)}<br/>— {shortDate(form.end_date)}</p><p className="lf-help">{regionLabel(form.region)}</p></div><button type="submit" form="lf-search-form" className="lf-find" disabled={loading} aria-label={loading?'유실물 조회 중':'유실물 찾기'}><SearchIcon/>{loading?'조회 중':'찾기'}</button></div>
    </section>
-   <section className="lf-scope" aria-label="공식 API 조회 범위"><strong>경찰청 공식 API 실시간 조회 · 최대 {maxRangeDays}일</strong><p>{result?.status==='ok'?`${dot(applied.start_date)} ~ ${dot(applied.end_date)} · 공식 전체 ${police?`경찰 ${number(police.totalCount)}건`:''}${police&&portal?' + ':''}${portal?`포털기관 ${number(portal.totalCount)}건`:''} · ${result.complete?'전체 수신 확인':'일부만 수신'}`:'검색하면 기간·지역 기준 공식 전체 건수를 함께 보여드려요.'}</p><p>{result?.fetchedAt?`조회 ${formatKst(result.fetchedAt)} · `:''}공식 지역코드로만 검색하며 보관처 이름에서 지역을 추정하지 않습니다. 현재 보관상태·전화번호·세부 습득장소는 원본에서 확인해 주세요.</p></section>
+   <section className="lf-scope" aria-label="공식 API 조회 범위"><strong>경찰청 공식 API 실시간 조회 · 전국 최대 {nationwideMaxDays}일 · 시·도 최대 {regionalMaxDays}일</strong><p>{result?.status==='ok'?`${dot(applied.start_date)} ~ ${dot(applied.end_date)} · 공식 전체 ${police?`경찰 ${number(police.totalCount)}건`:''}${police&&portal?' + ':''}${portal?`포털기관 ${number(portal.totalCount)}건`:''} · ${result.complete?'전체 수신 확인':'일부만 수신'}`:'검색하면 기간·지역 기준 공식 전체 건수를 함께 보여드려요.'}</p><p>{result?.fetchedAt?`조회 ${formatKst(result.fetchedAt)} · `:''}공식 지역코드로만 검색하며 보관처 이름에서 지역을 추정하지 않습니다. 현재 보관상태·전화번호·세부 습득장소는 원본에서 확인해 주세요.</p></section>
    <section id="lf-results" className="lf-results" aria-labelledby="lf-result-title" aria-busy={loading}>
         <div className="lf-results-heading"><h2 id="lf-result-title">{resultTitle} <span className="lf-count" aria-live="polite">{countText}</span></h2><div className="lf-results-summary"><p>{summary}</p><small>습득일 최신순 · 경찰청 공식 API 실시간 조회</small></div></div>
     <div className="lf-results-tools"><div className="lf-provider-filters" role="group" aria-label="기관 필터">{['기관전체','경찰관서','포털기관'].map(value=><button key={value} type="button" className={applied.institution===value?'is-active':''} aria-pressed={applied.institution===value} onClick={()=>filterInstitution(value)}>{value==='기관전체'?'전체 기관':value}</button>)}</div><p className="lf-source-totals">{result?.status==='ok'?`선택기관 수신 ${number(result.receivedCount)}건 · 조건 일치 ${number(result.matchedCount)}건 · 현재 ${result.items.length}건 표시`:'연결·수신 상태와 검색 결과를 구분합니다.'}</p></div>

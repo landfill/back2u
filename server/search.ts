@@ -7,12 +7,14 @@ export type SearchConfig = ClientConfig & {
   pageSize: number
   /** 출처별로 받아올 최대 건수. 초과분은 잘리고 complete=false 로 표시된다. */
   maxItemsPerSource: number
-  /** 동시에 보낼 공식 API 요청 수. */
+  /** 인스턴스 전체에서 동시에 보낼 공식 API 요청 수 (모든 검색이 공유). */
   concurrency: number
   /** 조회 결과 캐시 유지 시간(ms). */
   cacheTtlMs: number
-  /** 한 번에 조회할 수 있는 최대 기간(일). */
+  /** 시·도를 지정했을 때 한 번에 조회할 수 있는 최대 기간(일). */
   maxRangeDays: number
+  /** 전국(지역전체) 조회 시 최대 기간(일). */
+  maxRangeDaysNationwide: number
 }
 
 export type SearchInput = {
@@ -40,33 +42,34 @@ const CATEGORY_TERMS: Record<string, string[]> = {
 const ymdToDate = (v: string) => new Date(`${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T00:00:00Z`)
 const isYmd = (v: string) => /^\d{8}$/.test(v) && !Number.isNaN(ymdToDate(v).getTime()) && ymdToDate(v).toISOString().slice(0, 10).replaceAll('-', '') === v
 
-async function mapLimit<T, R>(inputs: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(inputs.length)
-  let next = 0
-  const workers = Array.from({ length: Math.min(limit, inputs.length) }, async () => {
-    while (next < inputs.length) {
-      const i = next++
-      out[i] = await fn(inputs[i])
+/** 동시 실행 수를 n 개로 제한하는 세마포어. */
+function createLimiter(n: number) {
+  let active = 0
+  const queue: (() => void)[] = []
+  return async <R>(fn: () => Promise<R>): Promise<R> => {
+    if (active >= n) await new Promise<void>((r) => queue.push(r))
+    active++
+    try {
+      return await fn()
+    } finally {
+      active--
+      queue.shift()?.()
     }
-  })
-  await Promise.all(workers)
-  return out
+  }
 }
 
 export function createSearchService(cfg: SearchConfig) {
   const cache = new Map<string, CacheEntry>()
+  const limit = createLimiter(Math.max(1, cfg.concurrency))
+  const page = (source: Source, q: Parameters<typeof fetchPage>[2]) => limit(() => fetchPage(cfg, source, q))
 
   async function loadSource(source: Source, start: string, end: string, region: string): Promise<SourceData> {
     const base = { START_YMD: start, END_YMD: end, N_FD_LCT_CD: region || undefined, numOfRows: cfg.pageSize }
-    const first = await fetchPage(cfg, source, { ...base, pageNo: 1 })
+    const first = await page(source, { ...base, pageNo: 1 })
     const total = first.totalCount
-    const limit = Math.min(total ?? first.items.length, cfg.maxItemsPerSource)
-    const pages = Math.max(1, Math.ceil(limit / cfg.pageSize))
-    const rest = await mapLimit(
-      Array.from({ length: pages - 1 }, (_, i) => i + 2),
-      cfg.concurrency,
-      (pageNo) => fetchPage(cfg, source, { ...base, pageNo }),
-    )
+    const wanted = Math.min(total ?? first.items.length, cfg.maxItemsPerSource)
+    const pages = Math.max(1, Math.ceil(wanted / cfg.pageSize))
+    const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => page(source, { ...base, pageNo: i + 2 })))
     const seen = new Set<string>()
     const items: LostItem[] = []
     for (const page of [first, ...rest]) {
@@ -108,9 +111,11 @@ export function createSearchService(cfg: SearchConfig) {
     if (!cfg.apiKey) return { ...empty, status: 'config_error', message: '서버에 공식 API 인증키(LOST112_API_KEY)가 설정되지 않았습니다.', httpStatus: 503 }
     if (!isYmd(q.START_YMD) || !isYmd(q.END_YMD) || q.START_YMD > q.END_YMD) return invalid('시작일과 종료일을 확인해 주세요.')
     const days = (ymdToDate(q.END_YMD).getTime() - ymdToDate(q.START_YMD).getTime()) / 86_400_000 + 1
-    if (days > cfg.maxRangeDays) return invalid(`조회 기간은 최대 ${cfg.maxRangeDays}일까지 선택할 수 있습니다.`)
     const region = q.region === '지역전체' ? '' : q.region
     if (region && !REGION_CODES.has(region)) return invalid('지원하지 않는 지역코드입니다.')
+    const maxDays = region ? cfg.maxRangeDays : cfg.maxRangeDaysNationwide
+    if (days > maxDays)
+      return invalid(region ? `시·도 조회 기간은 최대 ${maxDays}일까지 선택할 수 있습니다.` : `전국 조회 기간은 최대 ${maxDays}일입니다. 더 긴 기간은 시·도를 선택해 주세요.`)
 
     const sources: Source[] = q.institution === '경찰관서' ? ['police'] : q.institution === '포털기관' ? ['portal'] : ['police', 'portal']
     let data: SourceData[]
@@ -118,6 +123,7 @@ export function createSearchService(cfg: SearchConfig) {
       data = await Promise.all(sources.map((s) => cached(s, q.START_YMD, q.END_YMD, region)))
     } catch (e) {
       const d = e instanceof UpstreamError ? e.detail : {}
+      console.error(`[lost-items] upstream_error ${q.START_YMD}-${q.END_YMD} region=${region || 'all'}: ${(e as Error)?.message}`, d)
       const detail = [d.httpStatus && `HTTP ${d.httpStatus}`, d.resultCode && /^\d{1,6}$/.test(d.resultCode) && `코드 ${d.resultCode}`].filter(Boolean).join(' · ')
       const message = (e instanceof UpstreamError ? e.message : '공식 API 호출 중 오류가 발생했습니다.') + (detail ? ` (${detail})` : '') + ' 실제 유실물 0건을 뜻하지 않습니다.'
       return { ...empty, status: 'upstream_error', message, httpStatus: 502 }

@@ -17,6 +17,7 @@ export function createApp(cfg: SearchConfig) {
     c.json({
       regions: REGIONS,
       maxRangeDays: cfg.maxRangeDays,
+      maxRangeDaysNationwide: cfg.maxRangeDaysNationwide,
       maxItemsPerSource: cfg.maxItemsPerSource,
       apiKeyConfigured: Boolean(cfg.apiKey),
     }),
