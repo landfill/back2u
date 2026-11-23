@@ -18,7 +18,7 @@
 - 요청: `START_YMD`, `END_YMD`, `N_FD_LCT_CD`(상위 지역코드), `pageNo`, `numOfRows`
 - 응답은 JSON·XML 모두 해석합니다 (`response.header` / `response.body.items.item`, `resultMsg`·`resultMag` 둘 다 지원).
 
-공식 API에는 검색어 파라미터가 없으므로, 서버가 기간·지역 조건으로 목록 전체를 페이지 단위(기본 1000건)로 받아온 뒤 품목·검색어를 필터링하고 습득일 최신순으로 정렬해 페이지를 나눕니다. 같은 기간·지역 조회는 메모리에 캐시(기본 10분)되어 페이지 이동·필터 변경 시 공식 API를 다시 호출하지 않습니다. 출처별 수신 상한(기본 20,000건)을 넘으면 결과에 "일부만 수신"으로 표시됩니다.
+공식 API에는 검색어 파라미터가 없으므로, 서버가 기간·지역 조건으로 목록 전체를 페이지 단위(기본 1000건)로 받아온 뒤 품목·검색어를 필터링하고 습득일 최신순으로 정렬해 페이지를 나눕니다. 같은 기간·지역 조회는 메모리에 캐시(기본 10분)되어 페이지 이동·필터 변경 시 공식 API를 다시 호출하지 않습니다. 출처별 수신 상한(기본 10,000건)을 넘으면 결과에 "일부만 수신"으로 표시됩니다.
 
 ## 로컬 개발
 
@@ -60,11 +60,13 @@ docker run -p 8787:8787 -e LOST112_API_KEY=... back2u
 | `LOST112_API_KEY` | (필수) | koreaconnect 발급 사용자 인증키 |
 | `LOST112_API_BASE` | 위 기본 URL | 서비스 경로 앞부분 |
 | `LOST112_TIMEOUT_MS` | `15000` | 공식 API 1회 호출 타임아웃 |
+| `LOST112_RETRIES` | `2` | 타임아웃·연결 실패·429·5xx 재시도 횟수 |
 | `LOST112_PAGE_SIZE` | `1000` | 1회 호출당 `numOfRows` |
-| `LOST112_MAX_ITEMS_PER_SOURCE` | `20000` | 출처별 최대 수신 건수 |
-| `LOST112_CONCURRENCY` | `4` | 동시 호출 수 |
+| `LOST112_MAX_ITEMS_PER_SOURCE` | `10000` | 출처별 최대 수신 건수 |
+| `LOST112_CONCURRENCY` | `6` | 인스턴스 전체 공식 API 동시 호출 수 (모든 검색이 공유) |
 | `LOST112_CACHE_TTL_SECONDS` | `600` | 조회 캐시 시간 |
-| `LOST112_MAX_RANGE_DAYS` | `92` | 최대 조회 기간(일) |
+| `LOST112_MAX_RANGE_DAYS` | `31` | 시·도 지정 시 최대 조회 기간(일) |
+| `LOST112_MAX_RANGE_DAYS_NATIONWIDE` | `7` | 전국 조회 시 최대 조회 기간(일) |
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | 서버 바인딩 |
 
 ## API (서버)

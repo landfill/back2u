@@ -60,7 +60,7 @@ function mockFetch() {
   return { impl, calls }
 }
 
-const cfg = (fetchImpl: typeof fetch, apiKey = 'secret') => ({ baseUrl: 'https://example.test/1320000/', apiKey, timeoutMs: 1000, fetchImpl, pageSize: 10, maxItemsPerSource: 1000, concurrency: 2, cacheTtlMs: 60_000, maxRangeDays: 92 })
+const cfg = (fetchImpl: typeof fetch, apiKey = 'secret') => ({ baseUrl: 'https://example.test/1320000/', apiKey, timeoutMs: 1000, fetchImpl, pageSize: 10, maxItemsPerSource: 1000, concurrency: 2, cacheTtlMs: 60_000, maxRangeDays: 31, maxRangeDaysNationwide: 7 })
 
 test('GET /api/lost-items merges sources, pages upstream, filters and caches', async () => {
   const { impl, calls } = mockFetch()
@@ -97,6 +97,10 @@ test('GET /api/lost-items validation and config errors', async () => {
   assert.equal((await app.request('/api/lost-items?START_YMD=20261121&END_YMD=20261115')).status, 400)
   assert.equal((await app.request('/api/lost-items?START_YMD=20260101&END_YMD=20261121')).status, 400)
   assert.equal((await app.request('/api/lost-items?START_YMD=20261115&END_YMD=20261121&region=XXX')).status, 400)
+  // 전국은 7일, 시·도는 31일까지
+  assert.equal((await app.request('/api/lost-items?START_YMD=20261114&END_YMD=20261121')).status, 400)
+  assert.equal((await app.request('/api/lost-items?START_YMD=20261114&END_YMD=20261121&region=LCA000')).status, 200)
+  assert.equal((await app.request('/api/lost-items?START_YMD=20261021&END_YMD=20261121&region=LCA000')).status, 400)
 })
 
 test('GET /api/lost-items reports upstream errors as 502', async () => {
@@ -107,4 +111,19 @@ test('GET /api/lost-items reports upstream errors as 502', async () => {
   assert.equal(body.status, 'upstream_error')
   assert.match(body.message, /HTTP 401/)
   assert.doesNotMatch(body.message, /api_user_key_id|secret/)
+})
+
+test('GET /api/lost-items retries transient upstream failures', async () => {
+  const { impl } = mockFetch()
+  let failed = 0
+  const flaky = (async (input: any, init?: any) => {
+    if (failed < 2) {
+      failed++
+      return new Response('gateway down', { status: 503 })
+    }
+    return impl(input, init)
+  }) as typeof fetch
+  const res = await createApp({ ...cfg(flaky), retryDelayMs: 1 }).request('/api/lost-items?START_YMD=20261115&END_YMD=20261121&region=LCA000')
+  assert.equal(res.status, 200)
+  assert.equal(failed, 2)
 })

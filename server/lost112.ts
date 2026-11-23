@@ -41,6 +41,10 @@ export type ClientConfig = {
   baseUrl: string
   apiKey: string
   timeoutMs: number
+  /** 일시적 오류 시 추가 시도 횟수 (기본 2). */
+  retries?: number
+  /** 재시도 간격 기준(ms), 시도마다 선형 증가 (기본 500). */
+  retryDelayMs?: number
   fetchImpl?: typeof fetch
 }
 
@@ -96,7 +100,29 @@ export function parseBody(text: string): PageResult {
   return { resultCode: resultCode || '00', resultMsg, totalCount: Number.isFinite(totalCount) ? totalCount : null, items }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** 타임아웃·연결 실패·429·5xx 는 일시적 오류로 보고 재시도한다. 인증·4xx 오류는 즉시 실패. */
+const isTransient = (e: unknown) => {
+  if (!(e instanceof UpstreamError)) return false
+  const s = e.detail.httpStatus
+  return s === undefined ? !e.detail.resultCode && !e.detail.resultMsg : s === 429 || s >= 500
+}
+
 export async function fetchPage(cfg: ClientConfig, source: Source, q: QueryParams): Promise<PageResult> {
+  const attempts = 1 + Math.max(0, cfg.retries ?? 2)
+  for (let i = 1; ; i++) {
+    try {
+      return await fetchPageOnce(cfg, source, q)
+    } catch (e) {
+      if (i >= attempts || !isTransient(e)) throw e
+      console.warn(`[lost112] ${source} page ${q.pageNo} 재시도 ${i}/${attempts - 1}: ${(e as Error).message}`)
+      await sleep((cfg.retryDelayMs ?? 500) * i)
+    }
+  }
+}
+
+async function fetchPageOnce(cfg: ClientConfig, source: Source, q: QueryParams): Promise<PageResult> {
   const url = new URL(cfg.baseUrl.replace(/\/+$/, '') + '/' + ENDPOINTS[source])
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') url.searchParams.set(k, String(v))
   const doFetch = cfg.fetchImpl ?? fetch
