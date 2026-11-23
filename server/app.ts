@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
-import { REGIONS } from '../shared/regions.ts'
-import { createSearchService, type SearchConfig } from './search.ts'
+import { REGIONS } from '../shared/regions.js'
+import { createSearchService, type SearchConfig } from './search.js'
 
 const toInt = (v: string | undefined, fallback: number, min: number, max: number) => {
   const n = Number.parseInt(v ?? '', 10)

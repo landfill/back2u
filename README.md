@@ -28,7 +28,16 @@ cp .env.example .env   # LOST112_API_KEY 입력
 npm run dev            # API: http://localhost:8787, 웹: http://localhost:5173
 ```
 
-## 프로덕션
+## Vercel 배포
+
+1. Vercel에서 이 Git 저장소를 가져옵니다. 프로젝트 루트는 `package.json`과 `vercel.json`이 있는 디렉터리입니다. Node.js 24.x와 Fluid compute를 사용합니다. 프레임워크(Vite), 빌드 명령, 출력 디렉터리는 `vercel.json`에 지정되어 있습니다.
+2. 프로젝트 **Settings → Environment Variables**에서 발급받은 KoreaConnect 인증키를 `LOST112_API_KEY`로 등록합니다. **Production**에 적용하고 미리보기에서 실데이터를 확인할 때만 신뢰하는 브랜치의 **Preview**에도 등록합니다. `VITE_` 접두사를 붙이면 값이 클라이언트 빌드에 포함될 수 있습니다.
+3. 이 변경이 포함된 브랜치를 배포합니다. 키를 등록하거나 교체하면 대상 환경에 다시 배포합니다. Preview에서 확인한 후 해당 커밋을 Production으로 배포합니다.
+4. 배포 주소의 `/api/health`에서 `apiKeyConfigured: true`를 확인합니다. 이는 키가 설정되었다는 뜻입니다. 웹에서 하루 범위로 검색해 `/api/lost-items`가 HTTP 200과 `status: "ok"`를 반환하는지 확인하면 공식 API 인증까지 검증됩니다.
+
+Vercel은 `dist/`의 정적 웹 파일을 제공하고 `api/`의 세 엔드포인트를 Node.js 함수로 실행합니다. 브라우저는 같은 출처의 `/api/*`에 요청하며 검색 함수가 공식 API에 `api_user_key_id` 헤더를 붙입니다. 검색 캐시는 실행 중인 함수 인스턴스 안에서만 재사용됩니다. 검색 함수의 최대 실행 시간은 120초입니다.
+
+## 독립 Node.js 서버
 
 ```bash
 npm run build          # 타입체크 + dist/ (프론트) + dist-server/ (서버)

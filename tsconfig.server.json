@@ -7,5 +7,5 @@
     "skipLibCheck": true, "strict": true, "noImplicitAny": false,
     "types": ["node"]
   },
-  "include": ["server", "shared"]
+  "include": ["api", "server", "shared"]
 }

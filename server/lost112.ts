@@ -104,6 +104,7 @@ export async function fetchPage(cfg: ClientConfig, source: Source, q: QueryParam
   try {
     res = await doFetch(url, {
       headers: { api_user_key_id: cfg.apiKey, Accept: 'application/json, application/xml;q=0.9, */*;q=0.5' },
+      redirect: 'error',
       signal: AbortSignal.timeout(cfg.timeoutMs),
     })
   } catch (e) {

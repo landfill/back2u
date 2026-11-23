@@ -1,6 +1,6 @@
-import type { LostItem, SearchResponse, Source, SourceStat } from '../shared/types.ts'
-import { REGION_CODES } from '../shared/regions.ts'
-import { fetchPage, normalize, type ClientConfig, UpstreamError } from './lost112.ts'
+import type { LostItem, SearchResponse, Source, SourceStat } from '../shared/types.js'
+import { REGION_CODES } from '../shared/regions.js'
+import { fetchPage, normalize, type ClientConfig, UpstreamError } from './lost112.js'
 
 export type SearchConfig = ClientConfig & {
   /** 공식 API 1회 호출 시 받아올 건수 (numOfRows). */
@@ -118,7 +118,7 @@ export function createSearchService(cfg: SearchConfig) {
       data = await Promise.all(sources.map((s) => cached(s, q.START_YMD, q.END_YMD, region)))
     } catch (e) {
       const d = e instanceof UpstreamError ? e.detail : {}
-      const detail = [d.httpStatus && `HTTP ${d.httpStatus}`, d.resultCode && `코드 ${d.resultCode}`, d.resultMsg].filter(Boolean).join(' · ')
+      const detail = [d.httpStatus && `HTTP ${d.httpStatus}`, d.resultCode && /^\d{1,6}$/.test(d.resultCode) && `코드 ${d.resultCode}`].filter(Boolean).join(' · ')
       const message = (e instanceof UpstreamError ? e.message : '공식 API 호출 중 오류가 발생했습니다.') + (detail ? ` (${detail})` : '') + ' 실제 유실물 0건을 뜻하지 않습니다.'
       return { ...empty, status: 'upstream_error', message, httpStatus: 502 }
     }

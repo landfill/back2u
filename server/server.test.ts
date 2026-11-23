@@ -100,10 +100,11 @@ test('GET /api/lost-items validation and config errors', async () => {
 })
 
 test('GET /api/lost-items reports upstream errors as 502', async () => {
-  const impl = (async () => new Response('Unauthorized', { status: 401 })) as unknown as typeof fetch
+  const impl = (async () => new Response('Unauthorized api_user_key_id=secret', { status: 401 })) as unknown as typeof fetch
   const res = await createApp(cfg(impl)).request('/api/lost-items?START_YMD=20261115&END_YMD=20261121')
   assert.equal(res.status, 502)
   const body: any = await res.json()
   assert.equal(body.status, 'upstream_error')
   assert.match(body.message, /HTTP 401/)
+  assert.doesNotMatch(body.message, /api_user_key_id|secret/)
 })
